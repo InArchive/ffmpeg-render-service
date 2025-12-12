@@ -1,6 +1,6 @@
 import express from "express";
 import fetch from "node-fetch";
-import { exec } from "child_process";
+import { spawn } from "child_process";
 import { v4 as uuid } from "uuid";
 import fs from "fs";
 import path from "path";
@@ -23,12 +23,11 @@ async function download(url, output) {
 
 app.post("/render", async (req, res) => {
   try {
-    const { backgroundVideo, voiceover, music } = req.body;
+    console.log("▶ render request received");
 
+    const { backgroundVideo, voiceover, music } = req.body;
     if (!backgroundVideo || !voiceover) {
-      return res.status(400).json({
-        error: "backgroundVideo and voiceover are required"
-      });
+      return res.status(400).json({ error: "Missing URLs" });
     }
 
     const id = uuid();
@@ -41,35 +40,50 @@ app.post("/render", async (req, res) => {
     await download(voiceover, vo);
     if (music) await download(music, mu);
 
-    const audioPart = music
-      ? `-i ${mu} -filter_complex "[2:a]volume=0.2[a2];[1:a][a2]amix=inputs=2[a]" -map "[a]"`
-      : `-map 1:a`;
+    const args = [
+      "-y",
+      "-i", bg,
+      "-i", vo
+    ];
 
-    const cmd = `
-ffmpeg -y \
--i ${bg} \
--i ${vo} \
-${audioPart} \
--map 0:v \
--shortest \
--vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" \
--c:v libx264 \
--pix_fmt yuv420p \
-${out}
-`;
+    if (music) {
+      args.push(
+        "-i", mu,
+        "-filter_complex",
+        "[2:a]volume=0.2[a2];[1:a][a2]amix=inputs=2[a]",
+        "-map", "[a]"
+      );
+    } else {
+      args.push("-map", "1:a");
+    }
 
-    await new Promise((resolve, reject) => {
-      exec(cmd, (err) => (err ? reject(err) : resolve()));
+    args.push(
+      "-map", "0:v",
+      "-shortest",
+      "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+      "-c:v", "libx264",
+      "-pix_fmt", "yuv420p",
+      out
+    );
+
+    console.log("▶ ffmpeg args:", args.join(" "));
+
+    const ff = spawn("ffmpeg", args);
+
+    ff.stderr.on("data", d => console.log(d.toString()));
+
+    ff.on("close", code => {
+      if (code !== 0) {
+        return res.status(500).json({ error: "FFmpeg failed", code });
+      }
+
+      console.log("✔ render complete");
+      res.json({ success: true, file: out });
     });
 
-    res.json({
-      success: true,
-      file: out
-    });
   } catch (err) {
-    res.status(500).json({
-      error: err.message
-    });
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
