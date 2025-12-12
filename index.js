@@ -10,6 +10,7 @@ app.use(express.json());
 
 const TMP = "/tmp";
 
+// ---------------- helpers ----------------
 async function download(url, output) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to download ${url}`);
@@ -21,13 +22,16 @@ async function download(url, output) {
   });
 }
 
+// ---------------- render endpoint ----------------
 app.post("/render", async (req, res) => {
   try {
     console.log("▶ render request received");
 
     const { backgroundVideo, voiceover, music } = req.body;
     if (!backgroundVideo || !voiceover) {
-      return res.status(400).json({ error: "Missing URLs" });
+      return res.status(400).json({
+        error: "backgroundVideo and voiceover are required"
+      });
     }
 
     const id = uuid();
@@ -36,12 +40,16 @@ app.post("/render", async (req, res) => {
     const mu = path.join(TMP, `${id}-mu.mp3`);
     const out = path.join(TMP, `${id}.mp4`);
 
+    // download assets
     await download(backgroundVideo, bg);
     await download(voiceover, vo);
     if (music) await download(music, mu);
 
+    // ---------------- ffmpeg args ----------------
     const args = [
       "-y",
+      "-loglevel", "error",   // 🔥 silence ffmpeg
+      "-stats",
       "-i", bg,
       "-i", vo
     ];
@@ -66,27 +74,37 @@ app.post("/render", async (req, res) => {
       out
     );
 
-    console.log("▶ ffmpeg args:", args.join(" "));
+    console.log("▶ ffmpeg start");
 
     const ff = spawn("ffmpeg", args);
 
-    ff.stderr.on("data", d => console.log(d.toString()));
+    // ❌ DO NOT log ffmpeg output on Render free tier
+    // ff.stderr.on("data", d => console.log(d.toString()));
 
-    ff.on("close", code => {
+    ff.on("close", (code) => {
       if (code !== 0) {
-        return res.status(500).json({ error: "FFmpeg failed", code });
+        return res.status(500).json({
+          error: "FFmpeg failed",
+          code
+        });
       }
 
       console.log("✔ render complete");
-      res.json({ success: true, file: out });
+      res.json({
+        success: true,
+        file: out
+      });
     });
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({
+      error: err.message
+    });
   }
 });
 
+// ---------------- server ----------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`FFmpeg render service running on port ${PORT}`);
